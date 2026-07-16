@@ -6,7 +6,8 @@ on:
 env:
   # Bump to invalidate every cache (upstream keeps this in a secret;
   # a plain string does the same job in the fork).
-  CACHE_VERSION: lgpl-v3
+  CACHE_VERSION: lgpl-v4
+  # BUMP THIS whenever any toolchain flag changes - stale config.cache rejects flag changes
 
 jobs:
   build:
