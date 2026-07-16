@@ -6,7 +6,7 @@ on:
 env:
   # Bump to invalidate every cache (upstream keeps this in a secret;
   # a plain string does the same job in the fork).
-  CACHE_VERSION: lgpl-v1
+  CACHE_VERSION: lgpl-v2
 
 jobs:
   build:
