@@ -1,3 +1,53 @@
+# =============================================================================
+# LGPL libmpv build for Performx (Route A - GitHub Actions)
+#
+# PLACE THIS FILE in a fork of https://github.com/shinchiro/mpv-winbuild-cmake
+# as .github/workflows/build-libmpv-lgpl.yml and run it manually (Actions tab,
+# "Run workflow"). It never runs automatically.
+#
+# WHAT IT PRODUCES
+#   artifact libmpv-lgpl-x86_64               libmpv-2.dll (the LGPL build)
+#   artifact libmpv-lgpl-corresponding-source the EXACT source trees the build
+#                                             consumed, plus the build scripts -
+#                                             the LGPL corresponding-source
+#                                             bundle that must be hosted for as
+#                                             long as the dll is distributed.
+#   artifact build-failure-logs               (failed runs only) the inner
+#                                             ExternalProject logs - every
+#                                             failure must be diagnosable from
+#                                             this download alone.
+#
+# TOOLCHAIN STRATEGY (mirrors upstream's live mpv_gcc.yml)
+#   Upstream does NOT build the gcc cross toolchain from scratch per run: it
+#   restores the whole build_$BIT tree from actions/cache (restore-key prefix
+#   fallback to the newest previous cache), builds gcc ONLY when
+#   build_$BIT/install/bin/cross-gcc is missing, deletes the intermediate
+#   build_$BIT/toolchain directory after a successful gcc build, and saves the
+#   cache at the end of EVERY run (success or failure). The same pattern is
+#   used for src_packages and clang_root. This workflow adopts that verbatim:
+#   the FIRST run pays the from-scratch toolchain build (an hour plus); later
+#   runs restore it in seconds. If a cold gcc build fails, the failure-logs
+#   artifact carries the inner log; a re-run after a fix resumes from whatever
+#   the always-saved cache kept.
+#
+#   CACHE_VERSION below is this workflow's copy of upstream's cache-busting
+#   secret: bump it to force everything cold - INCLUDING after changing the
+#   scrub flags, so no stale dependency build tree configured with the old
+#   flags can linger (the verify step would catch a GPL leak regardless, but
+#   a clean rebuild avoids ever tripping it).
+#
+# WHY THE SCRUB STEP EXISTS
+#   Upstream mpv-winbuild-cmake HARDCODES a GPL configuration:
+#     packages/ffmpeg.cmake passes --enable-gpl --enable-version3
+#       --enable-libx264 --enable-libx265 (plus other GPL-only libraries)
+#       with no CMake option to turn them off;
+#     packages/mpv.cmake passes no -Dgpl= option (mpv's meson default is
+#       gpl=true, a GPL build) and enables rubberband and dvdnav (GPL-2.0).
+#   This workflow rewrites those two files before configuring, then VERIFIES
+#   the resulting binary. FFmpeg's own configure is the backstop: it refuses
+#   to enable any GPL-only library without --enable-gpl, so a GPL dependency
+#   this scrub misses fails the build loudly instead of shipping silently.
+# =============================================================================
 
 name: build-libmpv-lgpl
 
@@ -7,7 +57,10 @@ on:
 env:
   # Bump to invalidate every cache (upstream keeps this in a secret;
   # a plain string does the same job in the fork).
-  CACHE_VERSION: lgpl-v1
+  # BUMP THIS whenever any toolchain flag changes - a restored config.cache
+  # rejects changed flags ("CXXFLAGS has changed since the previous run").
+  # v4 = the known-good gnu++11 toolchain cache; do not regress it.
+  CACHE_VERSION: lgpl-v4
 
 jobs:
   build:
@@ -109,7 +162,7 @@ jobs:
           # literals are const char8_t* and no longer convert to std::string -
           # 'make all-gcc' dies in libcody/client.cc with dozens of "no
           # matching function ... const char8_t" errors. Injecting
-          # CXXFLAGS=-O2 -std=gnu++17 as a configure ARGUMENT (autoconf takes
+          # CXXFLAGS=-O2 -std=gnu++11 as a configure ARGUMENT (autoconf takes
           # VAR=value among the args) restores u8 literals to const char* for
           # gcc's own host code ONLY - other toolchain packages (cppwinrt
           # wants newer standards) are untouched. -O2 is kept because setting
@@ -117,7 +170,7 @@ jobs:
           # mask this entirely; it bites on cold builds only.
           # ------------------------------------------------------------------
           grep -q "<SOURCE_DIR>/configure" toolchain/gcc/gcc.cmake
-          sed -i 's|<SOURCE_DIR>/configure|<SOURCE_DIR>/configure "CXXFLAGS=-O2 -std=gnu++17"|' toolchain/gcc/gcc.cmake
+          sed -i 's|<SOURCE_DIR>/configure|<SOURCE_DIR>/configure "CXXFLAGS=-O2 -std=gnu++11"|' toolchain/gcc/gcc.cmake
 
           echo "--- ffmpeg.cmake flags after scrub (must show NO gpl/x264/x265) ---"
           grep -o -- "--enable-[a-z0-9-]*" packages/ffmpeg.cmake | sort -u
@@ -209,6 +262,15 @@ jobs:
       # packages/mpv.cmake passes --default-library=shared and -Dlibmpv=true,
       # so libmpv-2.dll falls out of this build. mpv.exe is built alongside
       # but is NOT shipped or uploaded - only the dll leaves this job.
+      # Package patch steps apply patches with git am, which refuses to run
+      # without an identity (vulkan was the first to bite: exit 128,
+      # "unable to auto-detect email address"). Container has none by default.
+      - name: Configure git identity (package patch steps use git am)
+        shell: bash
+        run: |
+          git config --global user.email "ci@build.local"
+          git config --global user.name "LGPL CI"
+
       - name: Build mpv (libmpv shared)
         shell: bash
         run: ninja -C build_$BIT mpv
