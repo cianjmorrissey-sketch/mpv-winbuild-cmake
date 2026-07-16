@@ -169,6 +169,23 @@ jobs:
           fi
 
           # ------------------------------------------------------------------
+          # LICENCE: strip every GPL-only ffmpeg external in one pass. FFmpeg's
+          # configure refuses each of these without --enable-gpl (avisynth was
+          # the first to trip, proving the backstop: "avisynth is gpl and
+          # --enable-gpl is not specified"). Configure stops at the FIRST
+          # offender, so scrub the documented complete set in one pass rather
+          # than one 40-minute run per library. None is needed by mpv playback
+          # for Performx. x264/x265 are also scrubbed above; repeating them
+          # here is harmless belt-and-braces, and the guard covers the family.
+          for opt in avisynth frei0r libcdio libdavs2 librubberband \
+                     libvidstab libx264 libx265 libxavs libxavs2 libxvid; do
+            sed -i "s/--enable-$opt//g" packages/ffmpeg.cmake
+          done
+          if grep -n -E -- "--enable-(avisynth|frei0r|libcdio|libdavs2|librubberband|libvidstab|libx264|libx265|libxavs2?|libxvid)" packages/ffmpeg.cmake; then
+            echo "FAIL: a GPL-only ffmpeg enable survived the scrub"; exit 1
+          fi
+
+          # ------------------------------------------------------------------
           # BUILD FIX, not licence: libcody char8_t shim for the toolchain gcc.
           # The pinned cross gcc (toolchain/gcc/gcc.cmake, a GCC 14 snapshot
           # tarball) bundles a libcody that predates char8_t; the container's
