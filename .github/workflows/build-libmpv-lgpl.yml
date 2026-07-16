@@ -155,6 +155,20 @@ jobs:
           fi
 
           # ------------------------------------------------------------------
+          # BUILD FIX, not licence: drop --enable-libshaderc from ffmpeg.
+          # The fork's scripts are frozen at fork time while ffmpeg is cloned
+          # from live master, which no longer accepts this option ("Unknown
+          # option"). Upstream winbuild updates ffmpeg.cmake in lockstep with
+          # ffmpeg; a stale fork decouples them (fix properly by Sync fork,
+          # this sed just makes the frozen scripts tolerant). Harmless for
+          # Performx: mpv gets its shader support via libplacebo/shaderc
+          # directly, not through ffmpeg.
+          sed -i "s/--enable-libshaderc//g" packages/ffmpeg.cmake
+          if grep -n -- "--enable-libshaderc" packages/ffmpeg.cmake; then
+            echo "FAIL: libshaderc option survived the scrub"; exit 1
+          fi
+
+          # ------------------------------------------------------------------
           # BUILD FIX, not licence: libcody char8_t shim for the toolchain gcc.
           # The pinned cross gcc (toolchain/gcc/gcc.cmake, a GCC 14 snapshot
           # tarball) bundles a libcody that predates char8_t; the container's
