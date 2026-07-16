@@ -63,7 +63,7 @@ env:
   # build_$BIT tree, including generated ExternalProject configure
   # commands - a stale tree runs the OLD flags no matter what the
   # scrubbed source says (libdavs2 bit exactly this way at v4).
-  CACHE_VERSION: lgpl-v5
+  CACHE_VERSION: lgpl-v6
 
 jobs:
   build:
@@ -180,19 +180,26 @@ jobs:
           # than one 40-minute run per library. None is needed by mpv playback
           # for Performx. x264/x265 are also scrubbed above; repeating them
           # here is harmless belt-and-braces, and the guard covers the family.
-          for opt in avisynth frei0r libcdio libdavs2 librubberband \
-                     libvidstab libx264 libx265 libxavs libxavs2 libxvid; do
-            sed -i "s/--enable-$opt//g" packages/ffmpeg.cmake
+          # PROVEN on a cold run: the executed configure command contains
+          # enables that packages/ffmpeg.cmake does not - dependency packages
+          # append their own --enable- flags from their OWN cmake files. The
+          # scrub therefore runs repo-wide across packages/, and the family
+          # includes libdvdnav/libdvdread (GPL in modern ffmpeg - the captured
+          # command showed them queued behind the davs2 refusal).
+          for opt in avisynth frei0r libcdio libdavs2 libdvdnav libdvdread \
+                     librubberband libvidstab libx264 libx265 libxavs \
+                     libxavs2 libxvid; do
+            find packages -name "*.cmake" -exec sed -i "s/--enable-$opt//g" {} +
           done
-          if grep -n -E -- "--enable-(avisynth|frei0r|libcdio|libdavs2|librubberband|libvidstab|libx264|libx265|libxavs2?|libxvid)" packages/ffmpeg.cmake; then
-            echo "FAIL: a GPL-only ffmpeg enable survived the scrub"; exit 1
+          if grep -rn -E -- "--enable-(avisynth|frei0r|libcdio|libdavs2|libdvdnav|libdvdread|librubberband|libvidstab|libx264|libx265|libxavs2?|libxvid)" packages/; then
+            echo "FAIL: a GPL-only ffmpeg enable survived the repo-wide scrub"; exit 1
           fi
 
           # PROOF DUMP: the transcript must show the post-scrub ffmpeg
           # enables, so a stale-cache execution can never again be confused
           # with a scrub failure.
-          echo "--- ffmpeg --enable- options after scrub ---"
-          grep -o -- "--enable-[a-z0-9_-]*" packages/ffmpeg.cmake | sort -u || true
+          echo "--- ALL --enable- options across packages/ after scrub ---"
+          grep -rho -- "--enable-[a-z0-9_-]*" packages/ | sort -u || true
 
           # ------------------------------------------------------------------
           # BUILD FIX, not licence: libcody char8_t shim for the toolchain gcc.
