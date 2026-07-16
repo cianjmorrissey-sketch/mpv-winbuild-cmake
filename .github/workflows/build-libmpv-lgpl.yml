@@ -95,7 +95,7 @@ jobs:
           # mask this entirely; it bites on cold builds only.
           # ------------------------------------------------------------------
           grep -q "<SOURCE_DIR>/configure" toolchain/gcc/gcc.cmake
-          sed -i 's|<SOURCE_DIR>/configure|<SOURCE_DIR>/configure "CXXFLAGS=-O2 -std=gnu++17"|' toolchain/gcc/gcc.cmake
+          sed -i 's|<SOURCE_DIR>/configure|<SOURCE_DIR>/configure "CXXFLAGS=-O2 -std=gnu++11"|' toolchain/gcc/gcc.cmake
 
           echo "--- ffmpeg.cmake flags after scrub (must show NO gpl/x264/x265) ---"
           grep -o -- "--enable-[a-z0-9-]*" packages/ffmpeg.cmake | sort -u
