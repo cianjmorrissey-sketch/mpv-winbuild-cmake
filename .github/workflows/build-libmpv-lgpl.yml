@@ -1,3 +1,4 @@
+
 name: build-libmpv-lgpl
 
 on:
@@ -6,8 +7,7 @@ on:
 env:
   # Bump to invalidate every cache (upstream keeps this in a secret;
   # a plain string does the same job in the fork).
-  CACHE_VERSION: lgpl-v4
-  # BUMP THIS whenever any toolchain flag changes - stale config.cache rejects flag changes
+  CACHE_VERSION: lgpl-v1
 
 jobs:
   build:
@@ -81,6 +81,27 @@ jobs:
           sed -i "s/-Ddvdnav=enabled/-Ddvdnav=disabled/" packages/mpv.cmake
 
           # ------------------------------------------------------------------
+          # subrandr OFF - need/build, not licence: it is mpv's Rust web-
+          # subtitle renderer, which Performx never uses, and its cargo xtask
+          # build is fragile (died at package 619/659 on a real run). It is
+          # also the ONLY cargo consumer in the package graph, so shedding it
+          # drops the whole Rust build surface from the mpv target. Two cuts:
+          # the meson feature (so mpv does not look for the library) and the
+          # DEPENDS entry (so ninja never schedules the cargo build at all).
+          # The DEPENDS delete is anchored to the exact 8-space line so it can
+          # never touch the -Dsubrandr= option line. NOTE rustup itself still
+          # installs: toolchain/gcc/gcc.cmake lists rustup in the gcc final
+          # step's DEPENDS, so the rust cache steps below stay (dead weight
+          # to drop later, deliberately not now).
+          # ------------------------------------------------------------------
+          sed -i "s/-Dsubrandr=enabled/-Dsubrandr=disabled/" packages/mpv.cmake
+          grep -q "^        subrandr\$" packages/mpv.cmake
+          sed -i "/^        subrandr\$/d" packages/mpv.cmake
+          if grep -n "subrandr" packages/mpv.cmake | grep -v -- "-Dsubrandr=disabled"; then
+            echo "FAIL: unexpected subrandr reference survived the scrub"; exit 1
+          fi
+
+          # ------------------------------------------------------------------
           # BUILD FIX, not licence: libcody char8_t shim for the toolchain gcc.
           # The pinned cross gcc (toolchain/gcc/gcc.cmake, a GCC 14 snapshot
           # tarball) bundles a libcody that predates char8_t; the container's
@@ -88,7 +109,7 @@ jobs:
           # literals are const char8_t* and no longer convert to std::string -
           # 'make all-gcc' dies in libcody/client.cc with dozens of "no
           # matching function ... const char8_t" errors. Injecting
-          # CXXFLAGS=-O2 -std=gnu++11 as a configure ARGUMENT (autoconf takes
+          # CXXFLAGS=-O2 -std=gnu++17 as a configure ARGUMENT (autoconf takes
           # VAR=value among the args) restores u8 literals to const char* for
           # gcc's own host code ONLY - other toolchain packages (cppwinrt
           # wants newer standards) are untouched. -O2 is kept because setting
@@ -96,7 +117,7 @@ jobs:
           # mask this entirely; it bites on cold builds only.
           # ------------------------------------------------------------------
           grep -q "<SOURCE_DIR>/configure" toolchain/gcc/gcc.cmake
-          sed -i 's|<SOURCE_DIR>/configure|<SOURCE_DIR>/configure "CXXFLAGS=-O2 -std=gnu++11"|' toolchain/gcc/gcc.cmake
+          sed -i 's|<SOURCE_DIR>/configure|<SOURCE_DIR>/configure "CXXFLAGS=-O2 -std=gnu++17"|' toolchain/gcc/gcc.cmake
 
           echo "--- ffmpeg.cmake flags after scrub (must show NO gpl/x264/x265) ---"
           grep -o -- "--enable-[a-z0-9-]*" packages/ffmpeg.cmake | sort -u
@@ -188,11 +209,6 @@ jobs:
       # packages/mpv.cmake passes --default-library=shared and -Dlibmpv=true,
       # so libmpv-2.dll falls out of this build. mpv.exe is built alongside
       # but is NOT shipped or uploaded - only the dll leaves this job.
-      - name: Configure git identity (package patch steps use git am)
-        run: |
-          git config --global user.email "ci@build.local"
-          git config --global user.name "LGPL CI"
-      
       - name: Build mpv (libmpv shared)
         shell: bash
         run: ninja -C build_$BIT mpv
@@ -268,6 +284,10 @@ jobs:
           mkdir -p failure-logs
           find "build_$BIT" -path "*-stamp/*.log" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
           find "build_$BIT" -name "config.log" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
+          # meson and CMake failures self-hide one level deeper than the stamp
+          # logs (the stamp log just says the tool failed): grab their own logs.
+          find "build_$BIT" -path "*/meson-logs/meson-log.txt" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
+          find "build_$BIT" -name "CMakeError.log" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
           find "build_$BIT" -name "*-err.log" 2>/dev/null | while read -r f; do
             dest="failure-logs/$(dirname "$f")"
             mkdir -p "$dest"
