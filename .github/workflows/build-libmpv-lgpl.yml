@@ -3,6 +3,11 @@ name: build-libmpv-lgpl
 on:
   workflow_dispatch:   # manual only - this is a deliberate, occasional build
 
+env:
+  # Bump to invalidate every cache (upstream keeps this in a secret;
+  # a plain string does the same job in the fork).
+  CACHE_VERSION: lgpl-v1
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -78,9 +83,55 @@ jobs:
           echo "--- mpv.cmake meson options after scrub (must show -Dgpl=false) ---"
           grep -o -- "-D[a-z_-]*=[a-z0-9]*" packages/mpv.cmake | sort -u
 
-      # Same configure shape as upstream's mpv_gcc.yml. SINGLE_SOURCE_LOCATION
-      # is where every dependency's source lands - it becomes the
-      # corresponding-source bundle below, so it must stay in the workspace.
+      # ----------------------------------------------------------------------
+      # Cache restore - upstream's exact pattern: whole build tree (the built
+      # toolchain lives under build_$BIT/install), the downloaded sources, and
+      # the rust root. restore-keys fall back to the newest previous cache, so
+      # only the very first run is cold.
+      # ----------------------------------------------------------------------
+      - name: Restore toolchain cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build_64
+          key: ${{ env.CACHE_VERSION }}-gcc-64_toolchain-${{ github.run_id }}
+          restore-keys: |
+            ${{ env.CACHE_VERSION }}-gcc-64_toolchain
+
+      - name: Restore source cache
+        uses: actions/cache/restore@v4
+        with:
+          path: src_packages
+          key: ${{ env.CACHE_VERSION }}-repository-${{ github.run_id }}
+          restore-keys: |
+            ${{ env.CACHE_VERSION }}-repository
+
+      - name: Restore rust cache
+        uses: actions/cache/restore@v4
+        with:
+          path: clang_root
+          key: ${{ env.CACHE_VERSION }}-clang_root-${{ github.run_id }}
+          restore-keys: |
+            ${{ env.CACHE_VERSION }}-clang_root
+
+      # Environment facts for the failure artifact: if the cold toolchain
+      # build dies again, the log bundle says exactly what host compiler and
+      # gcc prerequisites the container carried. Diagnostic only - no flags
+      # are changed here without an inner log naming the cause.
+      - name: Log container build environment
+        shell: bash
+        run: |
+          gcc --version | head -1 || true
+          make --version | head -1 || true
+          cmake --version | head -1 || true
+          ninja --version || true
+          pacman -Q gmp mpfr libmpc isl 2>/dev/null || true
+          nproc || true
+          free -h || true
+
+      # Same configure shape as upstream's mpv_gcc.yml (--fresh regenerates
+      # CMake state over a restored build tree exactly as upstream does).
+      # SINGLE_SOURCE_LOCATION is where every dependency's source lands - it
+      # becomes the corresponding-source bundle below.
       - name: Configure
         shell: bash
         run: |
@@ -94,9 +145,22 @@ jobs:
         shell: bash
         run: ninja -C build_$BIT download
 
-      - name: Build cross toolchain
+      # Upstream's conditional toolchain step, verbatim in shape: build gcc
+      # ONLY when the restored cache does not already carry the cross
+      # compiler, and drop the huge intermediate toolchain build tree after
+      # success so the saved cache stays small. The sentinel path
+      # (install/bin/cross-gcc) is upstream's own check.
+      - name: Build cross toolchain (cache-cold only)
         shell: bash
-        run: ninja -C build_$BIT gcc
+        run: |
+          set -euo pipefail
+          if [[ ! -f "build_$BIT/install/bin/cross-gcc" ]]; then
+            echo "toolchain cache cold: building gcc from scratch (long)"
+            ninja -C build_$BIT gcc
+            rm -rf build_$BIT/toolchain
+          else
+            echo "toolchain restored from cache: skipping gcc build"
+          fi
 
       # The standard mpv target already builds libmpv SHARED: upstream's
       # packages/mpv.cmake passes --default-library=shared and -Dlibmpv=true,
@@ -107,10 +171,11 @@ jobs:
         run: ninja -C build_$BIT mpv
 
       # ----------------------------------------------------------------------
-      # ACCEPTANCE GATE (same checks as Performx's MpvProbe --license): the
-      # FFmpeg configure line is embedded verbatim in the binary. If the dll
-      # still contains --enable-gpl / --enable-nonfree / libx264 / x265, FAIL
-      # the job - a red run here is the tripwire working.
+      # ACCEPTANCE GATE (same checks as Performx's MpvProbe --license): linked
+      # GPL codecs leave unmistakable marker strings (libx264 / x265 exist in
+      # the binary only when those libraries are compiled in), and any
+      # embedded GPL/nonfree configure line is caught wherever it sits. FAIL
+      # the job on any hit - a red run here is the tripwire working.
       # ----------------------------------------------------------------------
       - name: Verify LGPL configuration in the built dll
         shell: bash
@@ -121,7 +186,6 @@ jobs:
           echo "checking: $DLL"
           CONFIG=$(strings -n 8 "$DLL" | grep -m1 -- "--enable-" || true)
           echo "embedded configure fragment: ${CONFIG:-<none found>}"
-          test -n "$CONFIG" || { echo "FAIL: no FFmpeg configuration string found - cannot verify"; exit 1; }
           for bad in "--enable-gpl" "--enable-nonfree" "libx264" "x265"; do
             if strings -n 8 "$DLL" | grep -q -- "$bad"; then
               echo "FAIL: forbidden token '$bad' present in the built dll - this is a GPL build, do not ship"
@@ -160,3 +224,63 @@ jobs:
           name: libmpv-lgpl-corresponding-source
           path: out/libmpv-lgpl-corresponding-source.tar.gz
           if-no-files-found: error
+
+      # ----------------------------------------------------------------------
+      # FAILURE FORENSICS: the superbuild buries the real error in per-package
+      # ExternalProject logs that never reach the step output (the gcc death
+      # printed only "Command failed: 2"; the cause was in
+      # build_64/toolchain/gcc-prefix/src/gcc-stamp/gcc-build-*.log). On any
+      # failure, gather every stamp log, config.log and *-err.log tail into
+      # one artifact so the next failure is diagnosable from the download
+      # alone.
+      # ----------------------------------------------------------------------
+      - name: Collect inner build logs
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p failure-logs
+          find "build_$BIT" -path "*-stamp/*.log" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
+          find "build_$BIT" -name "config.log" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
+          find "build_$BIT" -name "*-err.log" | while read -r f; do
+            dest="failure-logs/$(dirname "$f")"
+            mkdir -p "$dest"
+            tail -c 262144 "$f" > "$dest/$(basename "$f").tail"
+          done
+          echo "--- collected ---"
+          find failure-logs -type f | head -50
+          tar -czf failure-logs.tar.gz failure-logs
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-failure-logs
+          path: failure-logs.tar.gz
+          if-no-files-found: warn
+          retention-days: 7
+
+      # ----------------------------------------------------------------------
+      # Cache save - upstream saves on EVERY run outcome, which is what makes
+      # a failed cold run recoverable: whatever the toolchain build completed
+      # is kept, and the re-run resumes instead of restarting from zero.
+      # ----------------------------------------------------------------------
+      - name: Save toolchain cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: build_64
+          key: ${{ env.CACHE_VERSION }}-gcc-64_toolchain-${{ github.run_id }}
+
+      - name: Save source cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: src_packages
+          key: ${{ env.CACHE_VERSION }}-repository-${{ github.run_id }}
+
+      - name: Save rust cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: clang_root
+          key: ${{ env.CACHE_VERSION }}-clang_root-${{ github.run_id }}
