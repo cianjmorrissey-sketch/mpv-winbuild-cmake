@@ -6,7 +6,7 @@ on:
 env:
   # Bump to invalidate every cache (upstream keeps this in a secret;
   # a plain string does the same job in the fork).
-  CACHE_VERSION: lgpl-v2
+  CACHE_VERSION: lgpl-v3
 
 jobs:
   build:
@@ -87,7 +87,7 @@ jobs:
           # literals are const char8_t* and no longer convert to std::string -
           # 'make all-gcc' dies in libcody/client.cc with dozens of "no
           # matching function ... const char8_t" errors. Injecting
-          # CXXFLAGS=-O2 -std=gnu++17 as a configure ARGUMENT (autoconf takes
+          # CXXFLAGS=-O2 -std=gnu++11 as a configure ARGUMENT (autoconf takes
           # VAR=value among the args) restores u8 literals to const char* for
           # gcc's own host code ONLY - other toolchain packages (cppwinrt
           # wants newer standards) are untouched. -O2 is kept because setting
