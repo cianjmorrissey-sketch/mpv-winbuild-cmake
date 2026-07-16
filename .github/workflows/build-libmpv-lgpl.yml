@@ -59,8 +59,11 @@ env:
   # a plain string does the same job in the fork).
   # BUMP THIS whenever any toolchain flag changes - a restored config.cache
   # rejects changed flags ("CXXFLAGS has changed since the previous run").
-  # v4 = the known-good gnu++11 toolchain cache; do not regress it.
-  CACHE_VERSION: lgpl-v4
+  # ALSO bump after changing SCRUB flags: the cache stores the whole
+  # build_$BIT tree, including generated ExternalProject configure
+  # commands - a stale tree runs the OLD flags no matter what the
+  # scrubbed source says (libdavs2 bit exactly this way at v4).
+  CACHE_VERSION: lgpl-v5
 
 jobs:
   build:
@@ -184,6 +187,12 @@ jobs:
           if grep -n -E -- "--enable-(avisynth|frei0r|libcdio|libdavs2|librubberband|libvidstab|libx264|libx265|libxavs2?|libxvid)" packages/ffmpeg.cmake; then
             echo "FAIL: a GPL-only ffmpeg enable survived the scrub"; exit 1
           fi
+
+          # PROOF DUMP: the transcript must show the post-scrub ffmpeg
+          # enables, so a stale-cache execution can never again be confused
+          # with a scrub failure.
+          echo "--- ffmpeg --enable- options after scrub ---"
+          grep -o -- "--enable-[a-z0-9_-]*" packages/ffmpeg.cmake | sort -u || true
 
           # ------------------------------------------------------------------
           # BUILD FIX, not licence: libcody char8_t shim for the toolchain gcc.
@@ -381,6 +390,9 @@ jobs:
           # logs (the stamp log just says the tool failed): grab their own logs.
           find "build_$BIT" -path "*/meson-logs/meson-log.txt" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
           find "build_$BIT" -name "CMakeError.log" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
+          # the EXACT ExternalProject commands that executed (a restored cache
+          # can run commands the current source no longer generates):
+          find "build_$BIT" -name "*-configure-*.cmake" -path "*ffmpeg*" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
           find "build_$BIT" -name "*-err.log" 2>/dev/null | while read -r f; do
             dest="failure-logs/$(dirname "$f")"
             mkdir -p "$dest"
