@@ -1,0 +1,162 @@
+name: build-libmpv-lgpl
+
+on:
+  workflow_dispatch:   # manual only - this is a deliberate, occasional build
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Upstream's own build container (toolchain deps preinstalled). Public
+    # image; forks can pull it unchanged.
+    container: ghcr.io/shinchiro/archlinux:latest
+    env:
+      BIT: "64"
+      ARCH: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ----------------------------------------------------------------------
+      # LGPL scrub. Every line here is licence-relevant:
+      #
+      #   --enable-gpl        REMOVED: flips the whole FFmpeg build to GPL-2.0.
+      #                       Without it FFmpeg is LGPL-2.1+.
+      #   --enable-version3   REMOVED: upgrades LGPL-2.1 to LGPL-3.0 (and GPL2
+      #                       to GPL3). Performx ships under LGPL-2.1 notices,
+      #                       so stay on 2.1. Any library that REQUIRES v3
+      #                       will now fail configure - remove that library.
+      #   --enable-nonfree    not present upstream, scrubbed defensively:
+      #                       would make the binary UNREDISTRIBUTABLE outright.
+      #   --enable-libx264    REMOVED: x264 is GPL-2.0. H.264 DECODING remains
+      #                       (FFmpeg's native decoder is LGPL); only x264
+      #                       ENCODING goes, which Performx does not use.
+      #   --enable-libx265    REMOVED: x265 is GPL-2.0. Same story for HEVC.
+      #   --enable-libdavs2 / --enable-libuavs3d / --enable-libxavs2 /
+      #   --enable-librubberband / --enable-libvidstab / --enable-frei0r /
+      #   --enable-libxvid    REMOVED if present: all GPL-only. Decoding needs
+      #                       none of them.
+      #   -Dgpl=false         ADDED to mpv's meson options: builds mpv's own
+      #                       code as LGPL-2.1+ (mpv is dual-licensed; the
+      #                       default true produces a GPL binary).
+      #   -Drubberband=disabled / -Ddvdnav=disabled
+      #                       mpv's OWN optional deps that are GPL-2.0
+      #                       (Rubber Band audio stretch; libdvdnav/dvdread):
+      #                       linking either would taint the dll regardless of
+      #                       -Dgpl=false. Measured enabled in upstream builds
+      #                       (the dev dll's mpv-configuration shows both).
+      #
+      # sed -i with no backup: the workspace is throwaway CI state.
+      # ----------------------------------------------------------------------
+      - name: Scrub GPL configuration (LGPL build)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for flag in \
+            --enable-gpl \
+            --enable-version3 \
+            --enable-nonfree \
+            --enable-libx264 \
+            --enable-libx265 \
+            --enable-libdavs2 \
+            --enable-libuavs3d \
+            --enable-libxavs2 \
+            --enable-librubberband \
+            --enable-libvidstab \
+            --enable-frei0r \
+            --enable-libxvid
+          do
+            sed -i "s/$flag//g" packages/ffmpeg.cmake
+          done
+          # mpv: LGPL build. Anchor on -Dlibmpv=true, which upstream always passes.
+          grep -q -- "-Dlibmpv=true" packages/mpv.cmake
+          sed -i "s/-Dlibmpv=true/-Dlibmpv=true -Dgpl=false/" packages/mpv.cmake
+          # mpv's GPL-2.0 optional deps out (see the option comments above).
+          sed -i "s/-Drubberband=enabled/-Drubberband=disabled/" packages/mpv.cmake
+          sed -i "s/-Ddvdnav=enabled/-Ddvdnav=disabled/" packages/mpv.cmake
+          echo "--- ffmpeg.cmake flags after scrub (must show NO gpl/x264/x265) ---"
+          grep -o -- "--enable-[a-z0-9-]*" packages/ffmpeg.cmake | sort -u
+          echo "--- mpv.cmake meson options after scrub (must show -Dgpl=false) ---"
+          grep -o -- "-D[a-z_-]*=[a-z0-9]*" packages/mpv.cmake | sort -u
+
+      # Same configure shape as upstream's mpv_gcc.yml. SINGLE_SOURCE_LOCATION
+      # is where every dependency's source lands - it becomes the
+      # corresponding-source bundle below, so it must stay in the workspace.
+      - name: Configure
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -DTARGET_ARCH=${ARCH}-w64-mingw32 \
+                -DSINGLE_SOURCE_LOCATION="$PWD/src_packages" \
+                -DRUSTUP_LOCATION="$PWD/clang_root/install_rustup" \
+                --fresh -G Ninja -B "build_$BIT" -S "$PWD"
+
+      - name: Download sources
+        shell: bash
+        run: ninja -C build_$BIT download
+
+      - name: Build cross toolchain
+        shell: bash
+        run: ninja -C build_$BIT gcc
+
+      # The standard mpv target already builds libmpv SHARED: upstream's
+      # packages/mpv.cmake passes --default-library=shared and -Dlibmpv=true,
+      # so libmpv-2.dll falls out of this build. mpv.exe is built alongside
+      # but is NOT shipped or uploaded - only the dll leaves this job.
+      - name: Build mpv (libmpv shared)
+        shell: bash
+        run: ninja -C build_$BIT mpv
+
+      # ----------------------------------------------------------------------
+      # ACCEPTANCE GATE (same checks as Performx's MpvProbe --license): the
+      # FFmpeg configure line is embedded verbatim in the binary. If the dll
+      # still contains --enable-gpl / --enable-nonfree / libx264 / x265, FAIL
+      # the job - a red run here is the tripwire working.
+      # ----------------------------------------------------------------------
+      - name: Verify LGPL configuration in the built dll
+        shell: bash
+        run: |
+          set -euo pipefail
+          DLL=$(find "build_$BIT" -name libmpv-2.dll | head -1)
+          test -n "$DLL" || { echo "FAIL: libmpv-2.dll not found in build tree"; exit 1; }
+          echo "checking: $DLL"
+          CONFIG=$(strings -n 8 "$DLL" | grep -m1 -- "--enable-" || true)
+          echo "embedded configure fragment: ${CONFIG:-<none found>}"
+          test -n "$CONFIG" || { echo "FAIL: no FFmpeg configuration string found - cannot verify"; exit 1; }
+          for bad in "--enable-gpl" "--enable-nonfree" "libx264" "x265"; do
+            if strings -n 8 "$DLL" | grep -q -- "$bad"; then
+              echo "FAIL: forbidden token '$bad' present in the built dll - this is a GPL build, do not ship"
+              exit 1
+            fi
+          done
+          echo "PASS: dll configuration is LGPL-clean"
+          mkdir -p out
+          cp "$DLL" out/
+
+      # The LGPL corresponding source: the exact source trees the build
+      # consumed (src_packages), plus this repository's build scripts at the
+      # exact commit (the scrubbed packages/*.cmake included via git archive
+      # would LOSE the scrub, so copy the working tree's packages/ too).
+      - name: Bundle corresponding source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          tar -czf out/libmpv-lgpl-corresponding-source.tar.gz \
+              src_packages packages CMakeLists.txt toolchain 2>/dev/null || \
+          tar -czf out/libmpv-lgpl-corresponding-source.tar.gz \
+              src_packages packages CMakeLists.txt
+          ls -la out/
+
+      - name: Upload libmpv-2.dll
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-lgpl-x86_64
+          path: out/libmpv-2.dll
+          if-no-files-found: error
+
+      - name: Upload corresponding source bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: libmpv-lgpl-corresponding-source
+          path: out/libmpv-lgpl-corresponding-source.tar.gz
+          if-no-files-found: error
