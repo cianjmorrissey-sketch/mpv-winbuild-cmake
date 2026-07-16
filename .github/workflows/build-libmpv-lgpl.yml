@@ -78,10 +78,31 @@ jobs:
           # mpv's GPL-2.0 optional deps out (see the option comments above).
           sed -i "s/-Drubberband=enabled/-Drubberband=disabled/" packages/mpv.cmake
           sed -i "s/-Ddvdnav=enabled/-Ddvdnav=disabled/" packages/mpv.cmake
+
+          # ------------------------------------------------------------------
+          # BUILD FIX, not licence: libcody char8_t shim for the toolchain gcc.
+          # The pinned cross gcc (toolchain/gcc/gcc.cmake, a GCC 14 snapshot
+          # tarball) bundles a libcody that predates char8_t; the container's
+          # host compiler (GCC 16) defaults to C++20+ semantics, where u8"..."
+          # literals are const char8_t* and no longer convert to std::string -
+          # 'make all-gcc' dies in libcody/client.cc with dozens of "no
+          # matching function ... const char8_t" errors. Injecting
+          # CXXFLAGS=-O2 -std=gnu++17 as a configure ARGUMENT (autoconf takes
+          # VAR=value among the args) restores u8 literals to const char* for
+          # gcc's own host code ONLY - other toolchain packages (cppwinrt
+          # wants newer standards) are untouched. -O2 is kept because setting
+          # CXXFLAGS replaces gcc's default "-g -O2". Warm toolchain caches
+          # mask this entirely; it bites on cold builds only.
+          # ------------------------------------------------------------------
+          grep -q "<SOURCE_DIR>/configure" toolchain/gcc/gcc.cmake
+          sed -i 's|<SOURCE_DIR>/configure|<SOURCE_DIR>/configure "CXXFLAGS=-O2 -std=gnu++17"|' toolchain/gcc/gcc.cmake
+
           echo "--- ffmpeg.cmake flags after scrub (must show NO gpl/x264/x265) ---"
           grep -o -- "--enable-[a-z0-9-]*" packages/ffmpeg.cmake | sort -u
           echo "--- mpv.cmake meson options after scrub (must show -Dgpl=false) ---"
           grep -o -- "-D[a-z_-]*=[a-z0-9]*" packages/mpv.cmake | sort -u
+          echo "--- toolchain gcc configure after libcody shim (must show CXXFLAGS) ---"
+          grep -n "CXXFLAGS" toolchain/gcc/gcc.cmake
 
       # ----------------------------------------------------------------------
       # Cache restore - upstream's exact pattern: whole build tree (the built
@@ -241,15 +262,19 @@ jobs:
           mkdir -p failure-logs
           find "build_$BIT" -path "*-stamp/*.log" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
           find "build_$BIT" -name "config.log" -exec cp --parents {} failure-logs/ \; 2>/dev/null || true
-          find "build_$BIT" -name "*-err.log" | while read -r f; do
+          find "build_$BIT" -name "*-err.log" 2>/dev/null | while read -r f; do
             dest="failure-logs/$(dirname "$f")"
             mkdir -p "$dest"
             tail -c 262144 "$f" > "$dest/$(basename "$f").tail"
-          done
+          done || true
+          # tar FIRST: the artifact must exist even if the listing below dies.
           tar -czf failure-logs.tar.gz failure-logs
           echo "--- collected ---"
+          # || true is LOAD-BEARING: under pipefail, head closing the pipe
+          # early SIGPIPEs find and would fail this step after a successful
+          # collection (bitten once via a web edit - do not remove).
           find failure-logs -type f | head -50 || true
-          
+
       - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v4
