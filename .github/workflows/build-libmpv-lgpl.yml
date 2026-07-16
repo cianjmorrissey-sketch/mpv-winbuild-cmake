@@ -188,6 +188,11 @@ jobs:
       # packages/mpv.cmake passes --default-library=shared and -Dlibmpv=true,
       # so libmpv-2.dll falls out of this build. mpv.exe is built alongside
       # but is NOT shipped or uploaded - only the dll leaves this job.
+      - name: Configure git identity (package patch steps use git am)
+        run: |
+          git config --global user.email "ci@build.local"
+          git config --global user.name "LGPL CI"
+      
       - name: Build mpv (libmpv shared)
         shell: bash
         run: ninja -C build_$BIT mpv
