@@ -63,7 +63,7 @@ env:
   # build_$BIT tree, including generated ExternalProject configure
   # commands - a stale tree runs the OLD flags no matter what the
   # scrubbed source says (libdavs2 bit exactly this way at v4).
-  CACHE_VERSION: lgpl-v6
+  CACHE_VERSION: lgpl-v7
 
 jobs:
   build:
@@ -193,6 +193,28 @@ jobs:
           done
           if grep -rn -E -- "--enable-(avisynth|frei0r|libcdio|libdavs2|libdvdnav|libdvdread|librubberband|libvidstab|libx264|libx265|libxavs2?|libxvid)" packages/; then
             echo "FAIL: a GPL-only ffmpeg enable survived the repo-wide scrub"; exit 1
+          fi
+
+          # ------------------------------------------------------------------
+          # VARIABLE-CARRIED ENABLE (the one literal seds can never catch):
+          # upstream passes davs2 as ${ffmpeg_davs2_cmd}, expanded to
+          # --enable-libdavs2 at CMake generate time - the literal exists in
+          # no source file, so three scrub generations passed their guards
+          # while configure kept receiving the flag (proven by the captured
+          # executed command vs the clean proof dump). Delete the variable
+          # reference AND the DEPENDS entry so davs2 neither enables nor
+          # builds. davs2 is GPL; uavs3d (its sibling variable) is BSD-3 and
+          # stays.
+          sed -i "/ffmpeg_davs2/d" packages/ffmpeg.cmake
+          if grep -n "ffmpeg_davs2" packages/ffmpeg.cmake; then
+            echo "FAIL: the davs2 variable reference survived"; exit 1
+          fi
+          # Belt and braces for the whole class: no OTHER cmake variable may
+          # expand to a scrubbed GPL enable. Search variable DEFINITIONS
+          # repo-wide for the family and fail loudly if any assignment
+          # produces one of the scrubbed flags outside ffmpeg.cmake.
+          if grep -rn -E "set\(.*--enable-(avisynth|frei0r|libcdio|libdavs2|libdvdnav|libdvdread|librubberband|libvidstab|libx264|libx265|libxavs2?|libxvid)" cmake/ packages/ 2>/dev/null; then
+            echo "FAIL: a variable definition still yields a GPL enable"; exit 1
           fi
 
           # PROOF DUMP: the transcript must show the post-scrub ffmpeg
