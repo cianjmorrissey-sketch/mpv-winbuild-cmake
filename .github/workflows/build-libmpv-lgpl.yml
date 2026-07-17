@@ -186,10 +186,14 @@ jobs:
           # scrub therefore runs repo-wide across packages/, and the family
           # includes libdvdnav/libdvdread (GPL in modern ffmpeg - the captured
           # command showed them queued behind the davs2 refusal).
+          # The loop covers cmake/ too: variable DEFINITIONS live there
+          # (packages_check.cmake set(ffmpeg_davs2_cmd "--enable-libdavs2")
+          # tripped the definition guard) - blanking the flag inside the
+          # set() neutralises the definition and any future reference.
           for opt in avisynth frei0r libcdio libdavs2 libdvdnav libdvdread \
                      librubberband libvidstab libx264 libx265 libxavs \
                      libxavs2 libxvid; do
-            find packages -name "*.cmake" -exec sed -i "s/--enable-$opt//g" {} +
+            find packages cmake -name "*.cmake" -exec sed -i "s/--enable-$opt//g" {} +
           done
           if grep -rn -E -- "--enable-(avisynth|frei0r|libcdio|libdavs2|libdvdnav|libdvdread|librubberband|libvidstab|libx264|libx265|libxavs2?|libxvid)" packages/; then
             echo "FAIL: a GPL-only ffmpeg enable survived the repo-wide scrub"; exit 1
