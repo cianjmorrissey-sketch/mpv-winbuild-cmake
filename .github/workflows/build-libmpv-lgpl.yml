@@ -221,6 +221,20 @@ jobs:
             echo "FAIL: a variable definition still yields a GPL enable"; exit 1
           fi
 
+          # ------------------------------------------------------------------
+          # BUILD FIX, not licence: disable mpv's ANGLE Win32 GL backend.
+          # Live-master drift between two upstreams: Google's ANGLE headers
+          # removed EGL_PLATFORM_ANGLE_TYPE_D3D9_ANGLE while mpv's
+          # context_angle.c still references it (failed at mpv 262/295).
+          # context_angle.c is gated by the egl-angle-win32 feature
+          # (verified against mpv's live meson.options); disabling it drops
+          # the file from the build. Zero Performx impact: the app renders
+          # via mpv's D3D11/Vulkan paths; ANGLE is a GL-compat fallback.
+          sed -i "s/-Dvulkan=enabled/-Dvulkan=enabled -Degl-angle-win32=disabled/" packages/mpv.cmake
+          if ! grep -q -- "-Degl-angle-win32=disabled" packages/mpv.cmake; then
+            echo "FAIL: the ANGLE disable did not land in mpv.cmake"; exit 1
+          fi
+
           # PROOF DUMP: the transcript must show the post-scrub ffmpeg
           # enables, so a stale-cache execution can never again be confused
           # with a scrub failure.
